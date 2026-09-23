@@ -1,0 +1,43 @@
+[manifest]
+id = "nikamimi_dk64_ra_probe"
+version = "0.2.1"
+display_name = "DK64 RetroAchievements (private beta)"
+description = "RetroAchievements account required for online awards. If no account is available, local progress only after this PC has cached the DK64 set. Create an account at https://retroachievements.org. F8 or R + D-pad Up opens the achievement browser; F8, Esc, or controller B closes it. Toasts show badges, titles and descriptions with an optional jingle. Reset local history with confirmation."
+short_description = "DK64 RA softcore beta, achievement browser and badges (F8)."
+authors = ["Nikamimi"]
+game_id = "dk64"
+minimum_recomp_version = "1.0.0"
+native_libraries = [
+    { name = "dk64_ra_probe", funcs = ["dk64_ra_probe_init", "dk64_ra_probe_frame", "dk64_ra_ui_revision", "dk64_ra_ui_count", "dk64_ra_ui_entry", "dk64_ra_ui_badge", "dk64_ra_ui_summary", "dk64_ra_ui_take_toast", "dk64_ra_ui_toast_description", "dk64_ra_ui_toast_badge", "dk64_ra_ui_hotkey", "dk64_ra_ui_reset_local"] },
+]
+
+[inputs]
+elf_path = "build/mod.elf"
+mod_filename = "dk64_ra_probe"
+func_reference_syms_file = "reference/dk64/DK64Syms/dump.toml"
+data_reference_syms_files = ["reference/dk64/DK64Syms/data_dump.toml"]
+additional_files = []
+
+[[manifest.config_options]]
+id = "tracking_mode_v2"
+name = "Achievement mode"
+description = "Online submits softcore triggers to RA; without sign-in it falls back to Local Tracking only when a DK64 set is cached on this PC. Local mode never requires sign-in when cached. The current RA username appears in the F8 browser after sign-in. No Hardcore or leaderboards. Restart after changing."
+type = "Enum"
+options = ["Online (softcore beta)", "Local Tracking only"]
+default = "Online (softcore beta)"
+
+[[manifest.config_options]]
+id = "notification_sound"
+name = "Achievement jingle"
+description = "Play a short original tropical percussion and marimba jingle when an achievement toast appears. No DK64 audio is bundled."
+type = "Enum"
+options = ["On", "Off"]
+default = "On"
+
+[[manifest.config_options]]
+id = "remember_signin"
+name = "Remember RA sign-in"
+description = "Windows: ask each launch, or store a token (never your password) in Credential Manager; switching back to Ask removes it. Linux: always ask each launch; token saving is unavailable."
+type = "Enum"
+options = ["Ask each launch", "Remember token on this PC"]
+default = "Ask each launch"

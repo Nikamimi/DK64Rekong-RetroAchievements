@@ -1,0 +1,17 @@
+/build/
+/reference/
+/.vs/
+/out/
+*.nrm
+*.dll
+*.so
+*.dylib
+*.log
+*.z64
+*.n64
+*.v64
+*.elf
+*.map
+*.env
+/.env
+/secrets/
