@@ -1,13 +1,20 @@
-# DK64 RetroAchievements — private Windows beta
+# DK64 RetroAchievements — experimental Windows x86-64 preview
 
 **Source code:** [GitHub repository](https://github.com/Nikamimi/DK64Rekong-RetroAchievements). This tester ZIP contains the mod binaries and instructions, not the Git repository. Use that link separately if you want to inspect or build the code.
 
-This is for invited testers only. It uses the existing RetroAchievements DK64
+This GitHub pre-release is for testing, not a stable or certified RA client.
+The in-game mod name retains its earlier **private beta** label.
+It uses the existing RetroAchievements DK64
 N64 set (game 10075), not a separate achievement set. Only the DK Rap
 achievement has been confirmed live in Online mode so far; it awards zero
 points. Other achievements and game-state edge cases are still being checked.
 
 ## Install
+
+This x86-64 build requires the Microsoft Visual C++ v14 x64 runtime
+(`MSVCP140.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll`). If Windows reports
+a missing runtime DLL, install the official Microsoft runtime, not individual
+DLLs from a third-party download site. ARM64-native game builds are not supported.
 
 1. Close DK64 Rekongpiled. Use the supported US retail DK64 ROM in your own
    portable Windows Rekongpiled 1.0.2 installation. The mod checks the nearby
@@ -50,10 +57,11 @@ unconfirmed awards after restarting the game.
   RA awards or game saves. Cancel was live-tested; Confirm is unit-tested but
   has not been invoked against the owner's live record.
 
-This is a feasibility beta, not a certified or public client. Network calls
+This is a feasibility beta, not a certified or supported stable client. Network calls
 can briefly pause the game, other mods and platform builds are unverified,
 and the check of the nearby ROM file is not yet bound to the exact ROM bytes
 selected by the running game. Please report the achievement name/ID, game
 state, what the browser showed, and any toast behavior. Never send your ROM,
-password, token, saves, or account-private data. Do not post the beta to the
-Rekongpiled mod website or distribute it beyond the invited group.
+password, token, saves, or account-private data. Share the official GitHub
+pre-release link with its warnings rather than presenting it as approved RA
+support. This release is not a submission to the Rekongpiled mod website.
