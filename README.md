@@ -10,6 +10,17 @@ A work-in-progress mod that brings the [existing DK64 N64 achievement set](https
 
 Recommended to play with Vanilla DK Rekongpiled. Compatibility with other mods is not guaranteed, but feel free to try.
 
+## Latest release
+
+**[v0.2.2 — latest published release](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases/latest)**
+
+- [Windows x86-64 download](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases/download/v0.2.2/dk64-ra-windows-x86_64-v0.2.2.zip)
+- [Native Linux x86-64 download](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases/download/v0.2.2/dk64-ra-linux-x86_64-glibc238-v0.2.2.zip)
+- [Windows + Linux / mod-list download (`dk64-ra.zip`)](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases/latest/download/dk64-ra.zip)
+- [SHA256 checksums](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases/latest/download/SHA256SUMS.txt)
+
+The repository's `main` branch contains the v0.2.2 source and current documentation. The installable packages are attached to the published GitHub release; `dk64-ra.zip` is the combined asset used by the mod list.
+
 ## Trying the mod
 
 Download a platform ZIP from [GitHub Releases](https://github.com/Nikamimi/DK64Rekong-RetroAchievements/releases). The current release is **v0.2.2**; GitHub's automatic "Source code" downloads are not installable packages. Each platform ZIP includes installation notes and checksums. The combined `dk64-ra.zip` includes both native companions and is intended for the mod-list download.
@@ -27,6 +38,25 @@ The game's `.nrm` installer alone will not install the native companion. Do not 
 - **Local Tracking only** never signs in or submits awards. It requires this user account to have cached the DK64 set during a previous successful Online load. On a fresh install without that cache, it cannot evaluate achievements. Local triggers are not RA awards and will not later be uploaded automatically.
 
 Press **F8** to open the achievement browser; **F8** or **Esc** closes it. The browser shows a badge grid: hover a badge or browse with arrow keys, D-pad, or left stick to see its title, description, points, progress, and award status. Enter / controller A activates filters and controls; Tab moves between sections. Controller shortcuts still need physical testing. Open **F8 > Account** to see the signed-in username, sign in, or log out. Configure links to this panel because Rekongpiled 1.0.2 only supports static mod settings. RA sign-in does not provide an email address. Choose **Save** in the Windows sign-in window to remember a login token (not a password) in Credential Manager. Log Out removes that token and resumes cached local tracking, preserving RA awards and game saves. Linux asks on each Online launch. Never send your ROM, credentials, token, save files, or unreviewed logs to a tester or issue thread.
+
+## Rekongpiled mod-list configuration
+
+Merge this entry into the existing `github_sources` array in the [mod website's `config.json`](https://github.com/Killklli/DK64RecompWebsite/blob/main/config.json):
+
+```json
+{
+  "github_sources": [
+    {
+      "enabled": true,
+      "repo": "Nikamimi/DK64Rekong-RetroAchievements",
+      "zip_containing_nrm": "dk64-ra.zip",
+      "tags": ["feature"]
+    }
+  ]
+}
+```
+
+The website reads the repository's latest published release and selects the asset named `dk64-ra.zip`. That ZIP includes the `.nrm`, Windows `.dll`, Linux `.so`, and installation guides. The `.nrm` contains `mod.json` and the supplied trophy artwork as `thumb.png`. Keep the asset name unchanged in future releases so the listing continues to update automatically.
 
 ## Building from source
 
