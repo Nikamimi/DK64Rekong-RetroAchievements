@@ -21,21 +21,23 @@ int main() {
 
     std::string hash = "not a ROM hash";
     setenv("APP_FOLDER_PATH", data.c_str(), 1);
-    if (dk64_ra::verify_stored_rom(hash) || !hash.empty()) return 4;
+    if (dk64_ra::verify_stored_rom(hash) != dk64_ra::RomVerificationStatus::NotFound ||
+        !hash.empty()) return 4;
     std::string username = "stale", token = "stale";
     if (dk64_ra::read_saved_login(username, token) || !username.empty() || !token.empty() ||
         dk64_ra::store_saved_login("user", "secret") || !dk64_ra::forget_saved_login()) return 5;
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
     std::string password = "stale";
-    if (dk64_ra::prompt_for_credentials(username, password, false) ||
-        !username.empty() || !password.empty()) return 6;
+    bool remember_signin = true;
+    if (dk64_ra::prompt_for_credentials(username, password, remember_signin) ||
+        !username.empty() || !password.empty() || remember_signin) return 6;
 
     // Optional read-only check with an owned, normalized ROM in the game's app
     // folder; no ROM is copied or needed for regular CTest runs.
     if (const char* install = std::getenv("DK64_RA_OWNED_INSTALL")) {
         setenv("APP_FOLDER_PATH", install, 1);
-        if (!dk64_ra::verify_stored_rom(hash) ||
+        if (dk64_ra::verify_stored_rom(hash) != dk64_ra::RomVerificationStatus::Supported ||
             hash != "9ec41abf2519fc386cadd0731f6e868c") return 7;
     }
     std::puts("Linux paths, fail-closed ROM verification, and no-token fallback passed");

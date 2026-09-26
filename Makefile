@@ -19,7 +19,7 @@ endif
 $(BUILD_DIR)/mod.o: src/mod.c include/modding.h include/ra_ui.h | $(BUILD_DIR)
 	$(CC) $(MIPS_FLAGS) -c $< -o $@
 
-$(BUILD_DIR)/ui.o: src/ui.c include/ra_ui.h include/ra_ui_api.h include/modding.h | $(BUILD_DIR)
+$(BUILD_DIR)/ui.o: src/ui.c include/ra_ui.h include/ra_ui_api.h include/ra_browser.h include/modding.h | $(BUILD_DIR)
 	$(CC) $(MIPS_FLAGS) -c $< -o $@
 
 $(BUILD_DIR)/mod.elf: $(BUILD_DIR)/mod.o $(BUILD_DIR)/ui.o mod.ld

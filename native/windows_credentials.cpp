@@ -6,12 +6,18 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <new>
+#include <vector>
 
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
 #include <wincred.h>
 #elif defined(__linux__)
 #include <pwd.h>
@@ -41,7 +47,67 @@ void clear_secret(std::string& secret) {
     secret.clear();
 }
 
-bool verify_stored_rom(std::string& hash) {
+RomVerificationStatus verify_rom_at_path(const std::filesystem::path& path,
+                                         std::string& hash) {
+    hash.clear();
+    if (path.empty()) return RomVerificationStatus::LocationUnavailable;
+    std::error_code filesystem_error;
+    const auto file_status = std::filesystem::status(path, filesystem_error);
+    if (filesystem_error == std::errc::no_such_file_or_directory ||
+        (!filesystem_error && !std::filesystem::exists(file_status)))
+        return RomVerificationStatus::NotFound;
+    if (filesystem_error || !std::filesystem::is_regular_file(file_status))
+        return RomVerificationStatus::Unreadable;
+
+    std::array<char, 33> generated{};
+#ifdef _WIN32
+    // MSVC opens filesystem::path using its wide-character form. Passing a
+    // UTF-8 path to rcheevos' narrow fopen fails for some Windows usernames.
+    std::ifstream rom(path, std::ios::binary | std::ios::ate);
+    if (!rom) return RomVerificationStatus::Unreadable;
+    const auto length = rom.tellg();
+    if (length <= 0 || length > 64LL * 1024LL * 1024LL)
+        return RomVerificationStatus::Unreadable;
+    std::vector<std::uint8_t> contents;
+    try {
+        contents.resize(static_cast<std::size_t>(length));
+    } catch (const std::bad_alloc&) {
+        return RomVerificationStatus::Unreadable;
+    }
+    rom.seekg(0);
+    if (!rom.read(reinterpret_cast<char*>(contents.data()),
+                  static_cast<std::streamsize>(contents.size())) ||
+        !rc_hash_generate_from_buffer(generated.data(), RC_CONSOLE_NINTENDO_64,
+                                      contents.data(), contents.size()))
+        return RomVerificationStatus::Unreadable;
+#else
+    const auto utf8 = path.u8string();
+    if (!rc_hash_generate_from_file(generated.data(), RC_CONSOLE_NINTENDO_64,
+                                    reinterpret_cast<const char*>(utf8.c_str())))
+        return RomVerificationStatus::Unreadable;
+#endif
+    static constexpr char kSupported[] = "9ec41abf2519fc386cadd0731f6e868c";
+    if (std::string(generated.data()) != kSupported)
+        return RomVerificationStatus::Mismatch;
+    hash = generated.data();
+    return RomVerificationStatus::Supported;
+}
+
+#ifdef _WIN32
+std::filesystem::path windows_stored_rom_path(
+    const std::filesystem::path& executable_directory,
+    const std::filesystem::path& local_app_data_directory) {
+    std::error_code filesystem_error;
+    const bool portable = std::filesystem::exists(executable_directory / L"portable.txt",
+                                                  filesystem_error);
+    if (filesystem_error) return {};
+    if (portable) return executable_directory / L"DK64.z64";
+    if (local_app_data_directory.empty()) return {};
+    return local_app_data_directory / L"DK64Recompiled" / L"DK64.z64";
+}
+#endif
+
+RomVerificationStatus verify_stored_rom(std::string& hash) {
     hash.clear();
 #if defined(_WIN32) || defined(__linux__)
     // Hash Rekongpiled's normalized, stored ROM, never an arbitrary ROM supplied
@@ -51,20 +117,22 @@ bool verify_stored_rom(std::string& hash) {
     const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
                                             static_cast<DWORD>(executable.size()));
     if (!length || length >= executable.size()) {
-        return false;
+        return RomVerificationStatus::LocationUnavailable;
     }
-    const auto directory = std::filesystem::path(executable.data()).parent_path();
-    std::error_code filesystem_error;
-    if (!std::filesystem::exists(directory / L"portable.txt", filesystem_error) ||
-        filesystem_error) {
-        return false;
-    }
+    PWSTR folder = nullptr;
+    std::filesystem::path local_app_data;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
+                                      nullptr, &folder)) && folder)
+        local_app_data = folder;
+    if (folder) CoTaskMemFree(folder);
+    const auto rom_path = windows_stored_rom_path(
+        std::filesystem::path(executable.data()).parent_path(), local_app_data);
 #else
     std::error_code filesystem_error;
     auto directory = std::filesystem::current_path(filesystem_error);
-    if (filesystem_error) return false;
+    if (filesystem_error) return RomVerificationStatus::LocationUnavailable;
     if (!std::filesystem::exists(directory / "portable.txt", filesystem_error)) {
-        if (filesystem_error) return false;
+        if (filesystem_error) return RomVerificationStatus::LocationUnavailable;
         // Match the game's app-folder resolution, including its Flatpak override.
         const char* app_folder = std::getenv("APP_FOLDER_PATH");
         const char* home = std::getenv("HOME");
@@ -74,25 +142,14 @@ bool verify_stored_rom(std::string& hash) {
         }
         if (app_folder && *app_folder) directory = app_folder;
         else if (home && *home) directory = std::filesystem::path(home) / ".config" / "DK64Recompiled";
-        else return false;
-        if (!directory.is_absolute()) return false;
+        else return RomVerificationStatus::LocationUnavailable;
+        if (!directory.is_absolute()) return RomVerificationStatus::LocationUnavailable;
     }
-#endif
     const auto rom_path = directory / "DK64.z64";
-    const auto utf8 = rom_path.u8string();
-    std::array<char, 33> generated{};
-    if (!rc_hash_generate_from_file(generated.data(), RC_CONSOLE_NINTENDO_64,
-                                    reinterpret_cast<const char*>(utf8.c_str()))) {
-        return false;
-    }
-    static constexpr char kSupported[] = "9ec41abf2519fc386cadd0731f6e868c";
-    if (std::string(generated.data()) != kSupported) {
-        return false;
-    }
-    hash = generated.data();
-    return true;
+#endif
+    return verify_rom_at_path(rom_path, hash);
 #else
-    return false;
+    return RomVerificationStatus::LocationUnavailable;
 #endif
 }
 
@@ -267,22 +324,22 @@ bool forget_saved_login() {
 }
 
 bool prompt_for_credentials(std::string& username, std::string& password,
-                            bool remember_signin) {
+                            bool& remember_signin) {
     username.clear();
     clear_secret(password);
+    remember_signin = false;
 #ifdef _WIN32
     CREDUI_INFOW info{};
     info.cbSize = sizeof(info);
     info.hwndParent = GetForegroundWindow();
     info.pszCaptionText = L"DK64 RetroAchievements online sign-in";
-    info.pszMessageText = remember_signin ?
-        L"Online softcore awards require an RA account. Your password is not saved; a login token will be stored in Windows Credential Manager. Cancel for cached local tracking only." :
-        L"Online softcore awards require an RA account. Your password and token are not saved. Cancel for cached local tracking only.";
+    info.pszMessageText = L"Sign in with your RetroAchievements username and password. Check Save to remember your sign-in on this PC (login token only; never your password). Cancel for local tracking.";
     std::array<wchar_t, CREDUI_MAX_USERNAME_LENGTH + 1> user{};
     std::array<wchar_t, CREDUI_MAX_PASSWORD_LENGTH + 1> secret{};
     BOOL save = FALSE;
     const DWORD flags = CREDUI_FLAGS_GENERIC_CREDENTIALS |
-                        CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST;
+                        CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST |
+                        CREDUI_FLAGS_SHOW_SAVE_CHECK_BOX;
     const DWORD result = CredUIPromptForCredentialsW(&info, L"retroachievements.org",
                                                      nullptr, 0, user.data(),
                                                      static_cast<ULONG>(user.size()),
@@ -299,6 +356,7 @@ bool prompt_for_credentials(std::string& username, std::string& password,
         username.clear();
         return false;
     }
+    remember_signin = save != FALSE;
     return true;
 #elif defined(__linux__)
     (void)remember_signin; // Linux tokens are not persisted in this first build.
@@ -306,7 +364,7 @@ bool prompt_for_credentials(std::string& username, std::string& password,
     std::string response;
     if (access("/usr/bin/kdialog", X_OK) == 0) {
         const char* const user_args[] = {"kdialog", "--title", "DK64 RetroAchievements",
-                                          "--inputbox", "RA username (softcore beta)", nullptr};
+                                          "--inputbox", "RA username (online mode)", nullptr};
         if (!dialog("/usr/bin/kdialog", user_args, response)) return false;
         strip_newline(response);
         if (!valid_dialog_value(response) || response.size() > 64) return false;
@@ -320,7 +378,7 @@ bool prompt_for_credentials(std::string& username, std::string& password,
         strip_newline(password);
     } else {
         const char* const args[] = {"zenity", "--forms", "--title=DK64 RetroAchievements",
-                                    "--text=Online softcore beta; password is not saved",
+                                    "--text=Online mode; password is not saved",
                                     "--add-entry=RA username", "--add-password=RA password",
                                     "--separator=|", nullptr};
         if (!dialog("/usr/bin/zenity", args, response)) return false;

@@ -11,17 +11,14 @@
 #include <cstring>
 #include <utility>
 
-namespace {
-void shorten_for_row(std::string& text, std::size_t limit) {
-    if (text.size() <= limit) return;
-    std::size_t end = limit - 3;
-    while (end && (static_cast<unsigned char>(text[end]) & 0xC0U) == 0x80U) --end;
-    text.resize(end);
-    text += "...";
-}
-}
-
 namespace dk64_ra {
+
+ClientBridge::ClientBridge(std::filesystem::path storage_directory)
+    : storage_directory_(std::move(storage_directory)) {}
+
+std::filesystem::path ClientBridge::storage_directory() const {
+    return storage_directory_.empty() ? local_progress_directory() : storage_directory_;
+}
 
 ClientBridge::~ClientBridge() {
     if (client_) {
@@ -29,8 +26,7 @@ ClientBridge::~ClientBridge() {
     }
 }
 
-bool ClientBridge::initialize(std::uint8_t* rdram, Mode mode, bool remember_signin,
-                              bool sound_enabled) {
+bool ClientBridge::initialize(std::uint8_t* rdram, Mode mode, bool sound_enabled) {
     if (!rdram) {
         return false;
     }
@@ -47,12 +43,7 @@ bool ClientBridge::initialize(std::uint8_t* rdram, Mode mode, bool remember_sign
     local_tracking_requested_ = mode != Mode::DiagnosticsOffline;
     local_tracking_attempted_ = false;
     online_awards_ready_ = false;
-#ifdef _WIN32
-    remember_signin_ = remember_signin;
-#else
-    remember_signin_ = false; // No Linux token store; ask on every Online launch.
-    (void)remember_signin;
-#endif
+    remember_signin_ = false;
     sound_enabled_ = sound_enabled;
     login_with_saved_token_ = false;
     catalog_dirty_ = false;
@@ -66,7 +57,8 @@ bool ClientBridge::initialize(std::uint8_t* rdram, Mode mode, bool remember_sign
     active_toast_badge_url_.clear();
     active_toast_description_.clear();
     account_username_.clear();
-    ui_status_ = mode == Mode::OnlineSoftcore ? "Online softcore: waiting for sign-in" :
+    account_notice_.clear();
+    ui_status_ = mode == Mode::OnlineSoftcore ? "Online: waiting for sign-in" :
                  mode == Mode::LocalTracking ? "Local Tracking only: checking cached set" :
                  "Diagnostics: offline";
     ++ui_revision_;
@@ -137,6 +129,67 @@ bool ClientBridge::safe_mode() const {
            (guest_catalog_.active() || rc_client_get_spectator_mode_enabled(client_));
 }
 
+bool ClientBridge::ui_copy_account(std::uint32_t field, std::uint8_t* rdram,
+                                    std::uint32_t address, std::uint32_t capacity) const {
+    std::string text;
+    switch (field) {
+    case 0: text = signed_in() ? account_username_ : "Not signed in"; break;
+    case 1: text = signed_in() ? (remember_signin_ ? "Sign-in remembered on this PC" :
+                                                  "Signed in for this session") :
+                               "Sign in to earn achievements on your RA account."; break;
+    case 2: text = account_notice_; break;
+    case 3: text = signed_in() ? "1" : "0"; break;
+    default: return false;
+    }
+    return write_guest_text(rdram, address, capacity, text, 0x05000000U);
+}
+
+bool ClientBridge::log_out() {
+    if (!client_ || mode_ == Mode::DiagnosticsOffline) return false;
+    // Stop submissions before discarding the session and its pending retries.
+    online_awards_ready_ = false;
+    rc_client_logout(client_);
+    account_username_.clear();
+    account_unlocks_.clear();
+    pending_online_.clear();
+    toasts_.clear();
+    active_toast_badge_url_.clear();
+    active_toast_description_.clear();
+    remember_signin_ = login_with_saved_token_ = false;
+    catalog_dirty_ = false;
+    const bool forgotten = forget_saved_login();
+    account_notice_ = forgotten ? "Logged out. Your RA awards and game saves are unchanged." :
+        "Logged out of this session, but the saved token could not be removed. Remove this mod's token in Windows Credential Manager before restarting.";
+    start_guest_tracking("RA account logged out");
+    ++ui_revision_;
+    return forgotten;
+}
+
+bool ClientBridge::sign_in() {
+    if (!client_ || mode_ == Mode::DiagnosticsOffline || signed_in()) return false;
+    if (verify_stored_rom(rom_hash_) != RomVerificationStatus::Supported) {
+        account_notice_ = "Sign-in unavailable: the game's stored ROM could not be verified.";
+        ++ui_revision_;
+        return false;
+    }
+    online_awards_ready_ = false;
+    rc_client_logout(client_);
+    guest_catalog_.load({}, local_progress_);
+    local_progress_ = LocalProgress{};
+    ui_achievements_.clear();
+    account_unlocks_.clear();
+    pending_online_.clear();
+    toasts_.clear();
+    catalog_dirty_ = false;
+    mode_ = Mode::OnlineSoftcore;
+    local_tracking_attempted_ = true;
+    login_with_saved_token_ = false;
+    rc_client_set_spectator_mode_enabled(client_, 0);
+    prompt_password();
+    ++ui_revision_;
+    return signed_in();
+}
+
 bool ClientBridge::reset_local_progress() {
     if (!local_progress_.reset()) return false;
     if (guest_catalog_.active() || (client_ && rc_client_is_game_loaded(client_)))
@@ -180,8 +233,8 @@ bool ClientBridge::ui_copy_entry(Filter filter, std::uint32_t index, std::uint32
     }
     std::string line;
     switch (field) {
-    case 0: line = entry->title; shorten_for_row(line, 76); break;
-    case 1: line = entry->description; shorten_for_row(line, 105); break;
+    case 0: line = entry->title; break;
+    case 1: line = entry->description; break;
     case 2:
         line = entry->disabled ? "Unavailable" :
                (entry->account_unlocked ? "Unlocked on RA" :
@@ -191,6 +244,7 @@ bool ClientBridge::ui_copy_entry(Filter filter, std::uint32_t index, std::uint32
         line += " | " + std::to_string(entry->points) + " pts";
         break;
     case 3: line = entry->unlocked ? "1" : "0"; break;
+    case 4: line = std::to_string(entry->id); break;
     default: return false;
     }
     return write_guest_text(rdram, address, capacity, line, 0x05000000U);
@@ -309,8 +363,8 @@ void ClientBridge::rebuild_ui_catalog(rc_client_t* client) {
     }
     ui_status_ = mode_ == Mode::OnlineSoftcore ?
         (!online_awards_ready_ ? "Online unavailable: safety gate blocked submissions" :
-         local_progress_.active() ? "Online softcore beta: awards enabled" :
-         "Online softcore beta: local history unavailable") :
+         local_progress_.active() ? "Online: awards enabled" :
+         "Online: local history unavailable") :
         (local_progress_.active() ? "Local tracking active: no awards submitted" :
          "Local tracking unavailable: progress storage error");
     ++ui_revision_;
@@ -383,7 +437,7 @@ void ClientBridge::server_call(const rc_api_request_t* request,
 
 void ClientBridge::catalog_callback(const rc_api_server_response_t* response, void* userdata) {
     const auto* data = static_cast<CatalogCallbackData*>(userdata);
-    const auto path = guest_catalog_path(local_progress_directory(), data->bridge->rom_hash_);
+    const auto path = guest_catalog_path(data->bridge->storage_directory(), data->bridge->rom_hash_);
     if (save_guest_catalog(path, response))
         diagnostic_log("[DK64 RA] Validated DK64 set cached locally for guest tracking.");
     data->callback(response, data->callback_data);
@@ -398,33 +452,50 @@ void ClientBridge::award_callback(const rc_api_server_response_t* response, void
         bridge->catalog_dirty_ = true;
         const auto* achievement = rc_client_get_achievement_info(bridge->client_, data->id);
         bridge->queue_toast(achievement);
-        diagnostic_log("[DK64 RA] RA confirmed softcore award %u.", data->id);
+        diagnostic_log("[DK64 RA] RA confirmed achievement %u.", data->id);
     } else {
-        diagnostic_log("[DK64 RA] Softcore award %u not confirmed; rcheevos may retry while running.", data->id);
+        diagnostic_log("[DK64 RA] Achievement %u not confirmed; rcheevos may retry while running.", data->id);
     }
     data->callback(response, data->callback_data);
 }
 
 void ClientBridge::start_tracking() {
-    if (!verify_stored_rom(rom_hash_)) {
-        ui_status_ = "Tracking unavailable: ROM mismatch";
+    const auto rom_status = verify_stored_rom(rom_hash_);
+    if (rom_status != RomVerificationStatus::Supported) {
+        const char* reason = nullptr;
+        switch (rom_status) {
+        case RomVerificationStatus::NotFound:
+            ui_status_ = "Tracking unavailable: stored DK64.z64 not found";
+            reason = "stored DK64.z64 not found in game data folder";
+            break;
+        case RomVerificationStatus::Unreadable:
+            ui_status_ = "Tracking unavailable: stored ROM unreadable";
+            reason = "stored DK64.z64 could not be read or hashed";
+            break;
+        case RomVerificationStatus::Mismatch:
+            ui_status_ = "Tracking unavailable: ROM mismatch";
+            reason = "stored DK64.z64 has an unsupported hash";
+            break;
+        default:
+            ui_status_ = "Tracking unavailable: game data folder unavailable";
+            reason = "game data folder could not be resolved";
+            break;
+        }
         ++ui_revision_;
-        diagnostic_log("[DK64 RA] Tracking unavailable: portable DK64.z64 did not match the supported retail hash.");
+        diagnostic_log("[DK64 RA] Tracking unavailable: %s.", reason);
         return;
-    }
-    if (!remember_signin_ && !forget_saved_login()) {
-        diagnostic_log("[DK64 RA] Could not remove saved sign-in; check Windows Credential Manager.");
     }
     if (mode_ == Mode::LocalTracking) {
         start_guest_tracking("Local Tracking only selected; no RA sign-in required");
         return;
     }
-    if (remember_signin_) {
+    {
         std::string username;
         std::string token;
         if (read_saved_login(username, token)) {
+            remember_signin_ = true;
             diagnostic_log("[DK64 RA] Supported ROM verified. Trying saved token (%s).",
-                           mode_ == Mode::OnlineSoftcore ? "online softcore" : "local tracking");
+                           mode_ == Mode::OnlineSoftcore ? "online" : "local tracking");
             login_with_saved_token_ = true;
             rc_client_begin_login_with_token(client_, username.c_str(), token.c_str(),
                                              login_callback, this);
@@ -438,12 +509,11 @@ void ClientBridge::start_tracking() {
 void ClientBridge::start_guest_tracking(const char* reason) {
     online_awards_ready_ = false;
     mode_ = Mode::LocalTracking;
-    account_username_.clear();
     rc_client_set_spectator_mode_enabled(client_, 1);
     local_progress_ = LocalProgress{};
-    if (!local_progress_.open(local_progress_directory(), "Guest", rom_hash_))
+    if (!local_progress_.open(storage_directory(), "Guest", rom_hash_))
         diagnostic_log("[DK64 RA] Guest local progress store unavailable.");
-    const auto path = guest_catalog_path(local_progress_directory(), rom_hash_);
+    const auto path = guest_catalog_path(storage_directory(), rom_hash_);
     if (guest_catalog_.load(path, local_progress_)) {
         rebuild_ui_catalog(client_);
         diagnostic_log("[DK64 RA] %s; guest cached set loaded (%u core achievements).",
@@ -457,14 +527,16 @@ void ClientBridge::start_guest_tracking(const char* reason) {
 }
 
 void ClientBridge::prompt_password() {
+    account_notice_.clear();
     ui_status_ = mode_ == Mode::OnlineSoftcore ?
-        "Online softcore: waiting for sign-in" : "Local tracking: waiting for sign-in";
+        "Online: waiting for sign-in" : "Local tracking: waiting for sign-in";
     ++ui_revision_;
     diagnostic_log("[DK64 RA] Supported ROM verified. Waiting for sign-in (%s).",
-                   mode_ == Mode::OnlineSoftcore ? "online softcore" : "local tracking");
+                   mode_ == Mode::OnlineSoftcore ? "online" : "local tracking");
     std::string username;
     std::string password;
     if (!prompt_for_credentials(username, password, remember_signin_)) {
+        account_notice_ = "Sign-in canceled or unavailable. Local tracking continues when cached.";
         start_guest_tracking("RA sign-in unavailable or canceled");
         return;
     }
@@ -493,6 +565,7 @@ void ClientBridge::login_callback(int result, const char* error_message,
             return;
         }
         diagnostic_log("[DK64 RA] Sign-in failed (code %d); using guest fallback if cached.", result);
+        bridge->account_notice_ = "Sign-in failed. Check your credentials and connection, then try again.";
         bridge->start_guest_tracking("RA sign-in failed");
         return;
     }
@@ -503,15 +576,19 @@ void ClientBridge::login_callback(int result, const char* error_message,
     if (bridge->remember_signin_) {
         const auto* user = rc_client_get_user_info(client);
         if (!user || !store_saved_login(user->username, user->token)) {
+            bridge->remember_signin_ = false;
+            bridge->account_notice_ = "Signed in for this session, but the login token could not be saved.";
             diagnostic_log("[DK64 RA] Signed in, but could not save the token for next time.");
         } else {
             diagnostic_log("[DK64 RA] Login token saved in Windows Credential Manager (not the password).");
         }
+    } else if (!forget_saved_login()) {
+        bridge->account_notice_ = "Signed in for this session, but a previously saved token could not be removed.";
     }
     diagnostic_log("[DK64 RA] Signed in; loading existing N64 set in %s mode.",
-                   bridge->mode_ == Mode::OnlineSoftcore ? "online softcore" : "local spectator");
+                   bridge->mode_ == Mode::OnlineSoftcore ? "online" : "local spectator");
     bridge->ui_status_ = bridge->mode_ == Mode::OnlineSoftcore ?
-        "Online softcore: loading DK64 set" : "Local tracking: loading DK64 set";
+        "Online: loading DK64 set" : "Local tracking: loading DK64 set";
     ++bridge->ui_revision_;
     rc_client_begin_load_game(client, bridge->rom_hash_.c_str(), load_callback, bridge);
 }
@@ -557,7 +634,7 @@ void ClientBridge::load_callback(int result, const char* error_message,
     }
     const auto* user = rc_client_get_user_info(client);
     if (!user || !user->username ||
-        !bridge->local_progress_.open(local_progress_directory(), user->username, bridge->rom_hash_)) {
+        !bridge->local_progress_.open(bridge->storage_directory(), user->username, bridge->rom_hash_)) {
         diagnostic_log("[DK64 RA] Local progress store unavailable; triggers will not be persisted.");
     }
     bridge->online_awards_ready_ = bridge->mode_ == Mode::OnlineSoftcore &&
@@ -565,7 +642,7 @@ void ClientBridge::load_callback(int result, const char* error_message,
     const auto* rap = rc_client_get_achievement_info(client, 60497);
     diagnostic_log("[DK64 RA] Game 10075 loaded: %u core, %u active across loaded subsets, %u disabled; DK Rap state %d. %s.",
                 summary.num_core_achievements, active, disabled, rap ? rap->state : -1,
-                bridge->online_awards_ready_ ? "ONLINE SOFTCORE BETA" : "NO AWARDS");
+                bridge->online_awards_ready_ ? "ONLINE AWARDS" : "NO AWARDS");
     bridge->rebuild_ui_catalog(client);
     rap_diagnostics_loaded(client);
 }

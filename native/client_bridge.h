@@ -19,23 +19,28 @@ extern "C" {
 namespace dk64_ra {
 
 // The native bridge supports both a spectator/local tracker and a limited
-// online softcore beta. Neither mode submits Hardcore or leaderboard results.
+// online mode. Neither mode submits Hardcore or leaderboard results.
 class ClientBridge {
 public:
     enum class Mode { DiagnosticsOffline, LocalTracking, OnlineSoftcore };
-    ClientBridge() = default;
+    explicit ClientBridge(std::filesystem::path storage_directory = {});
     ~ClientBridge();
     ClientBridge(const ClientBridge&) = delete;
     ClientBridge& operator=(const ClientBridge&) = delete;
 
     bool initialize(std::uint8_t* rdram, Mode mode = Mode::LocalTracking,
-                    bool remember_signin = false, bool sound_enabled = true);
+                    bool sound_enabled = true);
     void on_frame(std::uint8_t* rdram);
     bool ready() const { return client_ != nullptr; }
     std::uint64_t frames_seen() const { return frames_seen_; }
     bool safe_mode() const;
     Mode mode() const { return mode_; }
     bool reset_local_progress();
+    bool signed_in() const { return !account_username_.empty(); }
+    bool sign_in();
+    bool log_out();
+    bool ui_copy_account(std::uint32_t field, std::uint8_t* rdram,
+                         std::uint32_t guest_address, std::uint32_t capacity) const;
 
     enum class Filter : std::uint32_t { All = 0, Locked = 1, Unlocked = 2 };
     std::uint32_t ui_revision() const { return ui_revision_ + badges_.revision(); }
@@ -82,6 +87,7 @@ private:
     void start_tracking();
     void start_guest_tracking(const char* reason);
     void prompt_password();
+    std::filesystem::path storage_directory() const;
     void rebuild_ui_catalog(rc_client_t* client);
     void refresh_measured_progress();
     void queue_toast(const rc_client_achievement_t* achievement);
@@ -105,6 +111,7 @@ private:
     std::uint64_t frames_seen_ = 0;
     HttpTransport transport_;
     std::string rom_hash_;
+    std::filesystem::path storage_directory_;
     std::uint64_t read_calls_ = 0;
     std::uint64_t nonzero_read_calls_ = 0;
     std::uint64_t short_read_calls_ = 0;
@@ -131,6 +138,7 @@ private:
     std::string active_toast_badge_url_;
     std::string active_toast_description_;
     std::string account_username_;
+    std::string account_notice_;
     std::string ui_status_;
     std::uint32_t ui_revision_ = 0;
 };

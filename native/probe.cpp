@@ -1,9 +1,12 @@
 #include "client_bridge.h"
 #include "diagnostic_log.h"
+#include "browser_input.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <atomic>
+#include <chrono>
+#include <cstring>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -23,13 +26,14 @@ DK64_RA_EXPORT const std::uint32_t recomp_api_version = 1;
 
 namespace {
 dk64_ra::ClientBridge bridge;
+dk64_ra::BrowserInput browser_input;
 #if defined(_WIN32) || defined(__linux__)
 // Observe the game's SDL2 key events without removing or changing them.
 // Polling a key in a 30 Hz game loop can miss a brief keypress, so latch it.
 struct SdlKeyEventPrefix {
     std::uint32_t type, timestamp, window_id;
     std::uint8_t state, repeat, padding2, padding3;
-    std::int32_t scancode;
+    std::int32_t scancode, keycode;
 };
 #ifdef _WIN32
 using EventWatch = int(__cdecl*)(void*, void*);
@@ -42,6 +46,29 @@ using DelEventWatch = void(__cdecl*)(EventWatch, void*);
 std::atomic<bool> hotkey_pending{false};
 std::atomic<bool> back_pending{false};
 bool watch_registered = false;
+std::uint32_t browser_key(std::int32_t scancode) {
+    switch (scancode) {
+    case 82: return RA_INPUT_UP;
+    case 81: return RA_INPUT_DOWN;
+    case 80: return RA_INPUT_LEFT;
+    case 79: return RA_INPUT_RIGHT;
+    case 40: case 44: case 88: return RA_INPUT_ACCEPT; // Enter, Space, keypad Enter
+    case 43: return RA_INPUT_TAB;
+    case 74: return RA_INPUT_HOME;
+    case 77: return RA_INPUT_END;
+    default: return 0;
+    }
+}
+std::uint32_t browser_button(unsigned button) {
+    switch (button) {
+    case 0: return RA_INPUT_ACCEPT;
+    case 11: return RA_INPUT_UP;
+    case 12: return RA_INPUT_DOWN;
+    case 13: return RA_INPUT_LEFT;
+    case 14: return RA_INPUT_RIGHT;
+    default: return 0;
+    }
+}
 int DK64_RA_SDL_CALL on_sdl_event(void*,
 #ifdef _WIN32
                                   void* event) {
@@ -59,6 +86,35 @@ int DK64_RA_SDL_CALL on_sdl_event(void*,
         reinterpret_cast<const std::uint8_t*>(event)[12] == 1) {
         back_pending.store(true, std::memory_order_relaxed);
     }
+    if (!key) return 1;
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(event);
+    if ((key->type == 0x300U || key->type == 0x301U) && !key->repeat) {
+        auto bit = browser_key(key->scancode);
+        // Some virtual keyboards provide a keycode without a hardware scancode.
+        if (!bit && (key->keycode == 13 || key->keycode == 32)) bit = RA_INPUT_ACCEPT;
+        browser_input.button(bit, key->type == 0x300U);
+    }
+    if (key->type == 0x651U || key->type == 0x652U)
+        browser_input.button(browser_button(bytes[12]), key->type == 0x651U, 1);
+    if (key->type == 0x650U) { // SDL_CONTROLLERAXISMOTION
+        std::int16_t value;
+        std::memcpy(&value, bytes + 16, sizeof(value));
+        browser_input.axis(bytes[12], value);
+    }
+    if (key->type == 0x400U) browser_input.pulse(RA_INPUT_POINTER);
+    if (key->type == 0x401U && bytes[16] == 1)
+        browser_input.pulse(RA_INPUT_POINTER | RA_INPUT_CLICK);
+    if (key->type == 0x403U) { // SDL_MOUSEWHEEL (including flipped touchpad direction)
+        std::int32_t y;
+        std::uint32_t direction;
+        std::memcpy(&y, bytes + 20, sizeof(y));
+        std::memcpy(&direction, bytes + 24, sizeof(direction));
+        if (direction == 1) y = -y;
+        browser_input.pulse(y > 0 ? RA_INPUT_SCROLL_UP : y < 0 ? RA_INPUT_SCROLL_DOWN : 0);
+    }
+    // Clear held keys/sticks on focus loss and controller removal.
+    if ((key->type == 0x200U && bytes[12] == 13) || key->type == 0x654U)
+        browser_input.clear();
     return 1;
 }
 void register_hotkey_watch() {
@@ -99,10 +155,8 @@ DK64_RA_EXPORT void dk64_ra_probe_init(std::uint8_t* rdram, void* context) {
     // Do not read it when context is absent in a standalone native test.
     const std::uint32_t mode = context ?
         static_cast<std::uint32_t>(static_cast<const std::uint64_t*>(context)[4]) : 0;
-    const std::uint32_t remember_signin = context ?
-        static_cast<std::uint32_t>(static_cast<const std::uint64_t*>(context)[5]) : 0;
     const std::uint32_t notification_sound = context ?
-        static_cast<std::uint32_t>(static_cast<const std::uint64_t*>(context)[6]) : 0;
+        static_cast<std::uint32_t>(static_cast<const std::uint64_t*>(context)[5]) : 0;
 #ifdef DK64_RA_MEMORY_DIAGNOSTICS
     // Diagnostic binaries are strictly offline even if local tracking is on.
     // This prevents another credential prompt and network
@@ -115,10 +169,9 @@ DK64_RA_EXPORT void dk64_ra_probe_init(std::uint8_t* rdram, void* context) {
     const auto requested_mode = mode == 2 ? dk64_ra::ClientBridge::Mode::OnlineSoftcore :
         dk64_ra::ClientBridge::Mode::LocalTracking;
     dk64_ra::diagnostic_begin(true);
-    if (bridge.initialize(rdram, requested_mode, remember_signin == 1,
-                          notification_sound == 0)) {
+    if (bridge.initialize(rdram, requested_mode, notification_sound == 0)) {
         dk64_ra::diagnostic_log(requested_mode == dk64_ra::ClientBridge::Mode::OnlineSoftcore ?
-            "[DK64 RA probe] Online softcore beta requested; Hardcore off, spectator off." :
+            "[DK64 RA probe] Online mode requested; Hardcore off, spectator off." :
             "[DK64 RA probe] Local tracking requested; Hardcore off, spectator on.");
     }
 #endif
@@ -206,4 +259,55 @@ DK64_RA_EXPORT void dk64_ra_ui_hotkey(std::uint8_t*, void* context) {
 
 DK64_RA_EXPORT void dk64_ra_ui_reset_local(std::uint8_t*, void* context) {
     result(context, bridge.reset_local_progress() ? 1 : 0);
+}
+
+DK64_RA_EXPORT void dk64_ra_ui_account(std::uint8_t* rdram, void* context) {
+    result(context, bridge.ui_copy_account(argument(context, 4), rdram,
+                                          argument(context, 5), argument(context, 6)) ? 1 : 0);
+}
+
+DK64_RA_EXPORT void dk64_ra_ui_account_action(std::uint8_t*, void* context) {
+    const auto action = argument(context, 4);
+    result(context, action == 0 ? bridge.log_out() : action == 1 ? bridge.sign_in() : false);
+}
+
+DK64_RA_EXPORT void dk64_ra_ui_input(std::uint8_t*, void* context) {
+    const auto command = argument(context, 4);
+    if (command == 0 || command == 3) {
+        browser_input.set_active(command == 3);
+        browser_input.clear();
+        result(context, 0);
+        return;
+    }
+    if (command == 1) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        result(context, browser_input.poll(static_cast<std::uint64_t>(now)));
+        return;
+    }
+    // Pointer coordinates in the centered browser panel's DP space. Query SDL's
+    // logical window size, so fullscreen, HiDPI and window resizing agree with UI.
+    int x = -1, y = -1, width = 0, height = 0;
+#ifdef _WIN32
+    HMODULE sdl = GetModuleHandleW(L"SDL2.dll");
+    using MouseFocus = void*(__cdecl*)();
+    using MouseState = std::uint32_t(__cdecl*)(int*, int*);
+    using WindowSize = void(__cdecl*)(void*, int*, int*);
+    auto focus = sdl ? reinterpret_cast<MouseFocus>(GetProcAddress(sdl, "SDL_GetMouseFocus")) : nullptr;
+    auto mouse = sdl ? reinterpret_cast<MouseState>(GetProcAddress(sdl, "SDL_GetMouseState")) : nullptr;
+    auto size = sdl ? reinterpret_cast<WindowSize>(GetProcAddress(sdl, "SDL_GetWindowSize")) : nullptr;
+    void* window = focus ? focus() : nullptr;
+    if (window && mouse && size) { mouse(&x, &y); size(window, &width, &height); }
+#elif defined(__linux__)
+    if (auto* window = SDL_GetMouseFocus()) {
+        SDL_GetMouseState(&x, &y);
+        SDL_GetWindowSize(window, &width, &height);
+    }
+#endif
+    if (command != 2 || height <= 0) { result(context, 0xFFFFFFFFU); return; }
+    x = (x * 1080 - width * 540) / height + RA_BROWSER_WIDTH / 2;
+    y = y * 1080 / height - RA_BROWSER_TOP;
+    if (x < 0 || y < 0 || x >= RA_BROWSER_WIDTH || y >= RA_BROWSER_HEIGHT)
+        result(context, 0xFFFFFFFFU);
+    else result(context, static_cast<std::uint32_t>(x) | (static_cast<std::uint32_t>(y) << 16));
 }

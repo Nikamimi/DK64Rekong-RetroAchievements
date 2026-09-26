@@ -9,7 +9,7 @@ bool write_guest_text(std::uint8_t* rdram, std::uint32_t guest_address,
                       std::size_t mapped_bytes) {
     // Keep a bad import argument from writing into game RAM, a ROM mapping,
     // or outside the mod's 64 MiB extended RDRAM reservation.
-    if (!rdram || !capacity || capacity > 256 ||
+    if (!rdram || !capacity || capacity > 1024 ||
         guest_address < 0x81000000U || guest_address >= 0x85000000U) {
         return false;
     }

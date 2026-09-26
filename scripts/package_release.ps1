@@ -1,6 +1,6 @@
 param(
-    [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$')]
-    [string]$Tag = 'v0.2.1-beta.1'
+    [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$')]
+    [string]$Tag = 'v0.2.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,7 +18,9 @@ if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit source changes before packag
 $manifest = Get-Content -LiteralPath (Join-Path $root 'mod.toml') -Raw
 if ($manifest -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw 'Missing mod version.' }
 $modVersion = $Matches[1]
-if (-not $Tag.StartsWith("v$modVersion-beta.")) { throw 'Tag and mod version differ.' }
+if ($Tag -ne "v$modVersion" -and -not $Tag.StartsWith("v$modVersion-beta.")) {
+    throw 'Tag and mod version differ.'
+}
 
 $nrm = Join-Path $build 'dk64_ra_probe.nrm'
 $targets = @(
@@ -27,10 +29,10 @@ $targets = @(
     @{ Name = 'linux-x86_64-glibc238'; Binary = 'native-linux/dk64_ra_probe.so';
        Native = 'dk64_ra_probe.so'; Guide = 'private-linux-tester-guide.md'; Cache = 'native-linux/CMakeCache.txt' }
 )
-$nativeInputs = @(Get-ChildItem -LiteralPath (Join-Path $root 'native') -Recurse -File |
+$nativeInputs = @(Get-ChildItem -LiteralPath (Join-Path $root 'native'), (Join-Path $root 'include') -Recurse -File |
     Where-Object { $_.Extension -in '.cpp', '.h', '.txt' })
 $guestInputs = @(Get-Item -LiteralPath (Join-Path $root 'mod.toml'),
-    (Join-Path $root 'mod.ld'), (Join-Path $root 'Makefile')) +
+    (Join-Path $root 'mod.ld'), (Join-Path $root 'Makefile'), (Join-Path $root 'thumb.png')) +
     @(Get-ChildItem -LiteralPath (Join-Path $root 'src'), (Join-Path $root 'include') -Recurse -File)
 if (-not (Test-Path -LiteralPath $nrm -PathType Leaf)) { throw 'Build the .nrm first.' }
 if ($guestInputs | Where-Object LastWriteTimeUtc -gt (Get-Item -LiteralPath $nrm).LastWriteTimeUtc) {
@@ -51,6 +53,17 @@ foreach ($target in $targets) {
     }
 }
 
+# A stable asset name lets the mod-list configuration keep working on future
+# releases. The loader selects the companion for its OS; users may also choose
+# either smaller platform-specific archive.
+if ($Tag -eq "v$modVersion") {
+    $combinedGuide = Join-Path $root "docs/releases/$Tag.md"
+    if (-not (Test-Path -LiteralPath $combinedGuide -PathType Leaf)) {
+        throw "Missing combined-package guide: $combinedGuide"
+    }
+    $targets += @{ Name = 'windows-linux-x86_64'; Combined = $true }
+}
+
 $output = Join-Path $build "releases/$Tag"
 if (Test-Path -LiteralPath $output) { throw "Refusing to overwrite an existing release directory: $output" }
 [void](New-Item -ItemType Directory -Path $output)
@@ -68,16 +81,26 @@ function Get-StreamHash($stream) {
 }
 
 $archiveHashes = foreach ($target in $targets) {
-    $archivePath = Join-Path $output "dk64-ra-$($target.Name)-$Tag.zip"
+    $combined = $target.ContainsKey('Combined')
+    $archiveName = if ($combined) { 'dk64-ra.zip' } else { "dk64-ra-$($target.Name)-$Tag.zip" }
+    $archivePath = Join-Path $output $archiveName
     # Never enumerate a build directory for archive contents: logs, ROMs and
     # private state must not enter a distributable.
     $files = [ordered]@{
         'dk64_ra_probe.nrm' = $nrm
-        $target.Native = (Join-Path $build $target.Binary)
-        'TESTER_README.md' = (Join-Path $root "docs/$($target.Guide)")
-        'THIRD_PARTY_NOTICES.md' = (Join-Path $root 'THIRD_PARTY_NOTICES.md')
     }
-    $info = "Tag: $Tag`nMod version: $modVersion`nPlatform: $($target.Name)`nSource commit: $sourceCommit`nSource: https://github.com/Nikamimi/DK64Rekong-RetroAchievements/tree/$sourceCommit`nExperimental pre-release; see TESTER_README.md for limits.`n"
+    if ($combined) {
+        $files['dk64_ra_probe.dll'] = Join-Path $build 'native-win/Release/dk64_ra_probe.dll'
+        $files['dk64_ra_probe.so'] = Join-Path $build 'native-linux/dk64_ra_probe.so'
+        $files['TESTER_README.md'] = $combinedGuide
+        $files['WINDOWS_README.md'] = Join-Path $root 'docs/private-tester-guide.md'
+        $files['LINUX_README.md'] = Join-Path $root 'docs/private-linux-tester-guide.md'
+    } else {
+        $files[$target.Native] = Join-Path $build $target.Binary
+        $files['TESTER_README.md'] = Join-Path $root "docs/$($target.Guide)"
+    }
+    $files['THIRD_PARTY_NOTICES.md'] = Join-Path $root 'THIRD_PARTY_NOTICES.md'
+    $info = "Tag: $Tag`nMod version: $modVersion`nPlatform: $($target.Name)`nSource commit: $sourceCommit`nSource: https://github.com/Nikamimi/DK64Rekong-RetroAchievements/tree/$sourceCommit`nSee TESTER_README.md for installation, validation and known limits.`n"
     $expectedHashes = [ordered]@{}
     foreach ($name in $files.Keys) {
         $expectedHashes[$name] = (Get-FileHash -LiteralPath $files[$name] -Algorithm SHA256).Hash.ToLowerInvariant()

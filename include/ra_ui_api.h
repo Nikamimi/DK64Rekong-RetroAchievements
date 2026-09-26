@@ -64,5 +64,6 @@ RECOMP_IMPORT("*", void recompui_set_color(RaUiResource resource, const RaUiColo
 RECOMP_IMPORT("*", void recompui_set_justify_content(RaUiResource resource, int value));
 RECOMP_IMPORT("*", void recompui_set_flex_direction(RaUiResource resource, int value));
 RECOMP_IMPORT("*", void recompui_set_align_items(RaUiResource resource, int value));
+RECOMP_IMPORT("*", void recompui_set_font_size(RaUiResource resource, float value, int unit));
 
 #endif
